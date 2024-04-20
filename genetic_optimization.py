@@ -1,8 +1,7 @@
 import torch
-import random
-import csv
+import heapq
 import time
-
+import csv
 # PyTorch를 사용하여 MPS 활성화
 device = torch.device("mps")
 
@@ -12,74 +11,42 @@ def read_csv_file(file_path):
         tensor_data = torch.tensor(data, dtype=torch.float32).to(device)
     return tensor_data
 
-def path_length(cities, path):
-    path_cities = cities[path]
-    rolled_cities = torch.roll(path_cities, -1, dims=0)
-    return torch.norm(path_cities - rolled_cities, dim=1).sum()
+def euclidean_distance(a, b):
+    return torch.norm(a - b)
 
-def create_population(num_cities, population_size):
-    return torch.stack([torch.roll(torch.arange(num_cities, device=device), -i) for i in range(population_size)])
+def heuristic(path, cities):
+    # 현재 경로에서 마지막 도시와 첫 도시 사이의 유클리드 거리 반환
+    return euclidean_distance(cities[path[-1]], cities[path[0]])
 
-def edge_recombination_crossover(parent1, parent2):
-    size = len(parent1)
-    adjacency = [set() for _ in range(size)]
-    for p in [parent1, parent2]:
-        for i in range(size):
-            adjacency[p[i]].update([p[(i-1) % size], p[(i+1) % size]])
-    
-    child = []
-    current = parent1[random.randint(0, size-1)]
-    while len(child) < size:
-        child.append(current.item())
-        if len(child) == size:
-            break
-        next_city_candidates = list(adjacency[current] - set(child))
-        if next_city_candidates:
-            current = min(next_city_candidates, key=lambda x: len(adjacency[x]))
-        else:
-            remaining = list(set(range(size)) - set(child))
-            current = random.choice(remaining)
-    return torch.tensor(child, device=device)
-
-def scramble_mutation(path, mutation_rate):
-    if random.random() < mutation_rate:
-        size = len(path)
-        start, end = sorted(random.sample(range(size), 2))
-        path[start:end + 1] = path[torch.randperm(end + 1 - start) + start]
-    return path
-
-def select_parents(population, scores, tournament_size):
-    tournament_indices = torch.randperm(len(population), device=device)[:tournament_size]
-    tournament_scores = scores[tournament_indices]
-    parents_indices = tournament_indices[tournament_scores.argsort()[:2]]
-    return population[parents_indices[0]], population[parents_indices[1]]
-
-def genetic_algorithm_tsp(cities, population_size=100, generations=500, mutation_rate=0.01, tournament_size=5):
+def a_star_tsp(cities):
     num_cities = cities.size(0)
-    population = create_population(num_cities, population_size)
-    scores = torch.stack([path_length(cities, p) for p in population])
-
-    for _ in range(generations):
-        new_population = []
-        for _ in range(population_size // 2):
-            parent1, parent2 = select_parents(population, scores, tournament_size)
-            child1 = scramble_mutation(edge_recombination_crossover(parent1, parent2), mutation_rate)
-            child2 = scramble_mutation(edge_recombination_crossover(parent2, parent1), mutation_rate)
-            new_population.extend([child1, child2])
+    paths = []
+    # 우선순위 큐 초기화 (휴리스틱 값, 현재 경로, 현재 경로의 길이)
+    priority_queue = [(0, [0], 0)]
+    
+    while priority_queue:
+        current_f, current_path, current_g = heapq.heappop(priority_queue)
         
-        new_population = torch.stack(new_population)
-        new_scores = torch.stack([path_length(cities, p) for p in new_population])
-        combined_population = torch.cat((population, new_population))
-        combined_scores = torch.cat((scores, new_scores))
-        best_indices = combined_scores.argsort()[:population_size]
-        population, scores = combined_population[best_indices], combined_scores[best_indices]
+        if len(current_path) == num_cities and current_path[0] == current_path[-1]:
+            # 모든 도시를 방문하고 시작점으로 돌아온 경로
+            return current_path, current_g
+        
+        last_city = current_path[-1]
+        for next_city in range(num_cities):
+            if next_city not in current_path:
+                new_path = current_path + [next_city]
+                new_g = current_g + euclidean_distance(cities[last_city], cities[next_city])
+                new_h = heuristic(new_path, cities)
+                new_f = new_g + new_h
+                heapq.heappush(priority_queue, (new_f, new_path, new_g))
+                
+    return [], float('inf')  # 경로를 찾지 못한 경우
 
-    best_index = scores.argmin()
-    return population[best_index], scores[best_index]
-
+# CSV 파일에서 도시 데이터 읽기
 cities = read_csv_file('2024_AI_TSP.csv')
+
 start_time = time.time()
-best_path, best_score = genetic_algorithm_tsp(cities)
+best_path, best_score = a_star_tsp(cities)
 print(f"Best path found with total distance: {best_score}")
 print(f"Path: {best_path}")
 print(f"Execution time: {time.time() - start_time}")

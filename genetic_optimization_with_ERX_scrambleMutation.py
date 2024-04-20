@@ -1,18 +1,17 @@
+
 import torch
+import random
 import csv
 import time
-import random
+from tqdm import tqdm  # tqdm을 import합니다.
 
-print(torch.cuda.is_available())
-
-# GPU 설정을 CUDA로 활성화
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("mps")
 
 def read_csv_file(file_path):
     with open(file_path, mode='r', newline='') as file:
-        # CSV 데이터를 읽어 실수형 텐서로 변환
-        data = torch.tensor([[float(cell) for cell in row] for row in csv.reader(file)], dtype=torch.float32).to(device)
-    return data
+        data = [list(map(float, row)) for row in csv.reader(file)]
+        tensor_data = torch.tensor(data, dtype=torch.float32).to(device)
+    return tensor_data
 
 def path_length(cities, path):
     path_cities = cities[path]
@@ -20,7 +19,7 @@ def path_length(cities, path):
     return torch.norm(path_cities - rolled_cities, dim=1).sum()
 
 def create_population(num_cities, population_size):
-    return torch.stack([torch.roll(torch.arange(num_cities), -i) for i in range(population_size)]).to(device)
+    return torch.stack([torch.roll(torch.arange(num_cities, device=device), -i) for i in range(population_size)])
 
 def edge_recombination_crossover(parent1, parent2):
     size = len(parent1)
@@ -51,36 +50,35 @@ def scramble_mutation(path, mutation_rate):
     return path
 
 def select_parents(population, scores, tournament_size):
-    tournament_indices = torch.randperm(len(population))[:tournament_size]
+    tournament_indices = torch.randperm(len(population), device=device)[:tournament_size]
     tournament_scores = scores[tournament_indices]
-    parents_indices = tournament_indices[torch.topk(tournament_scores, 2, largest=False).indices]
+    parents_indices = tournament_indices[tournament_scores.argsort()[:2]]
     return population[parents_indices[0]], population[parents_indices[1]]
 
 def genetic_algorithm_tsp(cities, population_size=100, generations=500, mutation_rate=0.01, tournament_size=5):
     num_cities = cities.size(0)
     population = create_population(num_cities, population_size)
-    scores = torch.tensor([path_length(cities, p) for p in population], device=device)
+    scores = torch.stack([path_length(cities, p) for p in population])
 
-    for _ in range(generations):
+    for generation in tqdm(range(generations), desc="Evolving Generations"):
         new_population = []
         for _ in range(population_size // 2):
             parent1, parent2 = select_parents(population, scores, tournament_size)
             child1 = scramble_mutation(edge_recombination_crossover(parent1, parent2), mutation_rate)
             child2 = scramble_mutation(edge_recombination_crossover(parent2, parent1), mutation_rate)
-            new_population.append(child1)
-            new_population.append(child2)
+            new_population.extend([child1, child2])
         
         new_population = torch.stack(new_population)
-        new_scores = torch.tensor([path_length(cities, p) for p in new_population], device=device)
-
+        new_scores = torch.stack([path_length(cities, p) for p in new_population])
         combined_population = torch.cat((population, new_population))
         combined_scores = torch.cat((scores, new_scores))
-        elite_indices = torch.topk(combined_scores, population_size, largest=False).indices
-        population, scores = combined_population[elite_indices], combined_scores[elite_indices]
+        best_indices = combined_scores.argsort()[:population_size]
+        population, scores = combined_population[best_indices], combined_scores[best_indices]
 
     best_index = scores.argmin()
     return population[best_index], scores[best_index]
 
+# 파일에서 도시 데이터 읽기 및 유전 알고리즘 실행
 cities = read_csv_file('2024_AI_TSP.csv')
 start_time = time.time()
 best_path, best_score = genetic_algorithm_tsp(cities)
